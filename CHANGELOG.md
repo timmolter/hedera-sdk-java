@@ -4,7 +4,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v2.0.5-beta.7
+
+### Fixed
+
+ * Scheduled transactions should use new HAPI protobufs
+ * `ReceiptPrecheckException` should be thrown when the erroring status was in the `TransactionReceipt`
+ * Removed `nonce` from `TransactionId`
+ * `Transaction[Receipt|Record]Query` should not error for status `IDENTICAL_SCHEDULE_ALREADY_CREATED`
+   because the other fields on the receipt are present with that status.
+ * `ScheduleMultiSigExample` should use updated scheduled transaction API
+
+### Removed
+   * `ScheduleCreateTransaction.addScheduledSignature()`
+   * `ScheduleCreateTransaction.getScheduledSignatures()`
+   * `ScheduleSignTransaction.addScheduledSignature()`
+   * `ScheduleSignTransaction.getScheduledSignatures()`
+
+## v2.0.5-beta.6
+
+### Added
+
+ * Support for old `proto.Transaction` raw bytes in `Transaction.fromBytes()`
+
+## v2.0.5-beta.5
 
 ### Added
 
@@ -19,14 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  * `TransactionId.toBytes()` should support `nonce` if set
  * `TransactionId.fromBytes()` should support `nonce` if set
 
-## v2.0.5-beta4
+## v2.0.5-beta.4
 
 ### Added
 
  * Support `memo` for Tokens, Accounts, and Files.
  * `TransactionId.fromString()` should support nonce and scheduled.
 
-## v2.0.5-beta3
+## v2.0.5-beta.3
 
 ### Changed
 
@@ -48,12 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
  * `new TransactionId(AccountId, Instant)` - Use `TransactionId.withValidStart()` instead.
 
-## v2.0.5-beta2
+## v2.0.5-beta.2
 
 ### Fixed
  * `Schedule[Create|Sign]Transaction.addScheduleSignature()` didn't save added signatures correctly.
 
-## v2.0.5-beta1
+## v2.0.5-beta.1
 
 ### Added
 
