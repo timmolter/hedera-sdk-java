@@ -61,6 +61,35 @@ public abstract class Transaction<T extends Transaction<T>>
         bodyBuilder.setTransactionFee(new Hbar(2).toTinybars());
     }
 
+    Transaction(com.hedera.hashgraph.sdk.proto.TransactionBody txBody) {
+        bodyBuilder = txBody.toBuilder();
+
+        // Cannot call `Transaction#setTranscationValidDuration()` because it calls `isFrozen()` and
+        // causes a `NullPointerException` in `TopicMessageSubmitTransaction#isFrozen()`. I assume the private
+        // fields are not being set before the `super()` call which is why that is happening.
+        bodyBuilder.setTransactionValidDuration(DurationConverter.toProtobuf(DEFAULT_TRANSACTION_VALID_DURATION));
+
+        // Default transaction fee is 2 Hbar
+        bodyBuilder.setTransactionFee(new Hbar(2).toTinybars());
+    }
+
+    Transaction(com.hedera.hashgraph.sdk.proto.Transaction tx) throws InvalidProtocolBufferException  {
+        var transaction = SignedTransaction.parseFrom(tx.getSignedTransactionBytes());
+        transactions.add(tx);
+        signatures.add(transaction.getSigMap().toBuilder());
+        signedTransactions.add(transaction.toBuilder());
+
+        bodyBuilder = TransactionBody.parseFrom(signedTransactions.get(0).getBodyBytes()).toBuilder();
+
+        // Cannot call `Transaction#setTranscationValidDuration()` because it calls `isFrozen()` and
+        // causes a `NullPointerException` in `TopicMessageSubmitTransaction#isFrozen()`. I assume the private
+        // fields are not being set before the `super()` call which is why that is happening.
+        bodyBuilder.setTransactionValidDuration(DurationConverter.toProtobuf(DEFAULT_TRANSACTION_VALID_DURATION));
+
+        // Default transaction fee is 2 Hbar
+        bodyBuilder.setTransactionFee(new Hbar(2).toTinybars());
+    }
+
     Transaction(LinkedHashMap<TransactionId, LinkedHashMap<AccountId, com.hedera.hashgraph.sdk.proto.Transaction>> txs) throws InvalidProtocolBufferException {
         var size = txs.values().iterator().next().size();
 
@@ -85,6 +114,8 @@ public abstract class Transaction<T extends Transaction<T>>
             }
         }
 
+        nodeAccountIds.remove(new AccountId(0));
+
         bodyBuilder = TransactionBody.parseFrom(signedTransactions.get(0).getBodyBytes()).toBuilder();
     }
 
@@ -94,18 +125,53 @@ public abstract class Transaction<T extends Transaction<T>>
 
         var list = TransactionList.parseFrom(bytes);
 
-        for (var transaction : list.getTransactionListList()) {
-            var signedTransaction = SignedTransaction.parseFrom(transaction.getSignedTransactionBytes());
-            var txBody = TransactionBody.parseFrom(signedTransaction.getBodyBytes());
+        if (list.getTransactionListList().isEmpty()) {
+            var transaction = com.hedera.hashgraph.sdk.proto.Transaction.parseFrom(bytes).toBuilder();
 
-            if (dataCase.getNumber() == TransactionBody.DataCase.DATA_NOT_SET.getNumber()) {
-                dataCase = txBody.getDataCase();
+            TransactionBody txBody;
+            if (transaction.getSignedTransactionBytes().isEmpty()) {
+                txBody = TransactionBody.parseFrom(transaction.getBodyBytes());
+
+                transaction.setSignedTransactionBytes(SignedTransaction.newBuilder()
+                    .setBodyBytes(transaction.getBodyBytes())
+                    .setSigMap(transaction.getSigMap())
+                    .build()
+                    .toByteString())
+                    .clearBodyBytes()
+                    .clearSigMap();
+            } else {
+                var signedTransaction = SignedTransaction.parseFrom(transaction.getSignedTransactionBytes());
+                txBody = TransactionBody.parseFrom(signedTransaction.getBodyBytes());
             }
+
+            dataCase = txBody.getDataCase();
 
             var account = AccountId.fromProtobuf(txBody.getNodeAccountID());
             var transactionId = TransactionId.fromProtobuf(txBody.getTransactionID());
 
-            txs.computeIfAbsent(transactionId, k -> new LinkedHashMap<>()).put(account, transaction);
+            var linked = new LinkedHashMap<AccountId, com.hedera.hashgraph.sdk.proto.Transaction>();
+            linked.put(account, transaction.build());
+            txs.put(transactionId, linked);
+        } else {
+            for (var transaction : list.getTransactionListList()) {
+                var signedTransaction = SignedTransaction.parseFrom(transaction.getSignedTransactionBytes());
+                var txBody = TransactionBody.parseFrom(signedTransaction.getBodyBytes());
+
+                if (dataCase.getNumber() == TransactionBody.DataCase.DATA_NOT_SET.getNumber()) {
+                    dataCase = txBody.getDataCase();
+                }
+
+                var account = AccountId.fromProtobuf(txBody.getNodeAccountID());
+                var transactionId = TransactionId.fromProtobuf(txBody.getTransactionID());
+
+                var linked = txs.containsKey(transactionId) ?
+                    Objects.requireNonNull(txs.get(transactionId)) :
+                    new LinkedHashMap<AccountId, com.hedera.hashgraph.sdk.proto.Transaction>();
+
+                linked.put(account, transaction);
+
+                txs.put(transactionId, linked);
+            }
         }
 
         switch (dataCase) {
@@ -222,18 +288,136 @@ public abstract class Transaction<T extends Transaction<T>>
         }
     }
 
-    public final ScheduleCreateTransaction schedule() {
-        requireOneNodeAccountId();
+    public static Transaction<?> fromScheduledTransaction(com.hedera.hashgraph.sdk.proto.SchedulableTransactionBody scheduled) throws InvalidProtocolBufferException {
+        var body = TransactionBody.newBuilder();
 
-        if (signedTransactions.size() > 1) {
-            throw new IllegalStateException("Cannot schedule a chunked transaction");
+        switch (scheduled.getDataCase()) {
+            case CONTRACTCALL:
+                return new ContractExecuteTransaction(body.setContractCall(scheduled.getContractCall()).setMemo(scheduled.getMemo()).build());
+
+            case CONTRACTCREATEINSTANCE:
+                return new ContractCreateTransaction(body.setContractCreateInstance(scheduled.getContractCreateInstance()).setMemo(scheduled.getMemo()).build());
+
+            case CONTRACTUPDATEINSTANCE:
+                return new ContractUpdateTransaction(body.setContractUpdateInstance(scheduled.getContractUpdateInstance()).setMemo(scheduled.getMemo()).build());
+
+            case CONTRACTDELETEINSTANCE:
+                return new ContractDeleteTransaction(body.setContractDeleteInstance(scheduled.getContractDeleteInstance()).setMemo(scheduled.getMemo()).build());
+
+            case CRYPTOCREATEACCOUNT:
+                return new AccountCreateTransaction(body.setCryptoCreateAccount(scheduled.getCryptoCreateAccount()).setMemo(scheduled.getMemo()).build());
+
+            case CRYPTODELETE:
+                return new AccountDeleteTransaction(body.setCryptoDelete(scheduled.getCryptoDelete()).setMemo(scheduled.getMemo()).build());
+
+            case CRYPTOTRANSFER:
+                return new TransferTransaction(body.setCryptoTransfer(scheduled.getCryptoTransfer()).setMemo(scheduled.getMemo()).build());
+
+            case CRYPTOUPDATEACCOUNT:
+                return new AccountUpdateTransaction(body.setCryptoUpdateAccount(scheduled.getCryptoUpdateAccount()).setMemo(scheduled.getMemo()).build());
+
+            case FILEAPPEND:
+                return new FileAppendTransaction(body.setFileAppend(scheduled.getFileAppend()).setMemo(scheduled.getMemo()).build());
+
+            case FILECREATE:
+                return new FileCreateTransaction(body.setFileCreate(scheduled.getFileCreate()).setMemo(scheduled.getMemo()).build());
+
+            case FILEDELETE:
+                return new FileDeleteTransaction(body.setFileDelete(scheduled.getFileDelete()).setMemo(scheduled.getMemo()).build());
+
+            case FILEUPDATE:
+                return new FileUpdateTransaction(body.setFileUpdate(scheduled.getFileUpdate()).setMemo(scheduled.getMemo()).build());
+
+            case SYSTEMDELETE:
+                return new SystemUndeleteTransaction(body.setSystemDelete(scheduled.getSystemDelete()).setMemo(scheduled.getMemo()).build());
+
+            case SYSTEMUNDELETE:
+                return new SystemDeleteTransaction(body.setSystemUndelete(scheduled.getSystemUndelete()).setMemo(scheduled.getMemo()).build());
+
+            case FREEZE:
+                return new FreezeTransaction(body.setFreeze(scheduled.getFreeze()).setMemo(scheduled.getMemo()).build());
+
+            case CONSENSUSCREATETOPIC:
+                return new TopicCreateTransaction(body.setConsensusCreateTopic(scheduled.getConsensusCreateTopic()).setMemo(scheduled.getMemo()).build());
+
+            case CONSENSUSUPDATETOPIC:
+                return new TopicUpdateTransaction(body.setConsensusUpdateTopic(scheduled.getConsensusUpdateTopic()).setMemo(scheduled.getMemo()).build());
+
+            case CONSENSUSDELETETOPIC:
+                return new TopicDeleteTransaction(body.setConsensusDeleteTopic(scheduled.getConsensusDeleteTopic()).setMemo(scheduled.getMemo()).build());
+
+            case CONSENSUSSUBMITMESSAGE:
+                return new TopicMessageSubmitTransaction(body.setConsensusSubmitMessage(scheduled.getConsensusSubmitMessage()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENASSOCIATE:
+                return new TokenAssociateTransaction(body.setTokenAssociate(scheduled.getTokenAssociate()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENBURN:
+                return new TokenBurnTransaction(body.setTokenBurn(scheduled.getTokenBurn()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENCREATION:
+                return new TokenCreateTransaction(body.setTokenCreation(scheduled.getTokenCreation()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENDELETION:
+                return new TokenDeleteTransaction(body.setTokenDeletion(scheduled.getTokenDeletion()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENDISSOCIATE:
+                return new TokenDissociateTransaction(body.setTokenDissociate(scheduled.getTokenDissociate()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENFREEZE:
+                return new TokenFreezeTransaction(body.setTokenFreeze(scheduled.getTokenFreeze()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENGRANTKYC:
+                return new TokenGrantKycTransaction(body.setTokenGrantKyc(scheduled.getTokenGrantKyc()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENMINT:
+                return new TokenMintTransaction(body.setTokenMint(scheduled.getTokenMint()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENREVOKEKYC:
+                return new TokenRevokeKycTransaction(body.setTokenRevokeKyc(scheduled.getTokenRevokeKyc()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENUNFREEZE:
+                return new TokenUnfreezeTransaction(body.setTokenUnfreeze(scheduled.getTokenUnfreeze()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENUPDATE:
+                return new TokenUpdateTransaction(body.setTokenUpdate(scheduled.getTokenUpdate()).setMemo(scheduled.getMemo()).build());
+
+            case TOKENWIPE:
+                return new TokenWipeTransaction(body.setTokenWipe(scheduled.getTokenWipe()).setMemo(scheduled.getMemo()).build());
+
+            case SCHEDULEDELETE:
+                return new ScheduleDeleteTransaction(body.setScheduleDelete(scheduled.getScheduleDelete()).setMemo(scheduled.getMemo()).build());
+
+            default:
+                throw new IllegalStateException("schedulable transaction did not have a transaction set");
+        }
+    }
+
+    public ScheduleCreateTransaction schedule() {
+        requireNotFrozen();
+
+        if (!nodeAccountIds.isEmpty()) {
+            throw new IllegalStateException(
+                "The underlying transaction for a scheduled transaction cannot have node account IDs set"
+            );
         }
 
-        return new ScheduleCreateTransaction(
-            this.nodeAccountIds,
-            this.signedTransactions.get(0).getBodyBytes(),
-            this.signatures.get(0).build()
-        );
+        onFreeze(bodyBuilder);
+
+        var scheduable = SchedulableTransactionBody.newBuilder()
+            .setTransactionFee(bodyBuilder.getTransactionFee())
+            .setMemo(bodyBuilder.getMemo());
+
+        onScheduled(scheduable);
+
+        var scheduled = new ScheduleCreateTransaction()
+            .setScheduledTransactionBody(scheduable.build());
+
+        if (!transactionIds.isEmpty()) {
+            scheduled.setTransactionId(transactionIds.get(0).setScheduled(true));
+        }
+
+        return scheduled;
     }
 
     static byte[] hash(byte[] bytes) {
@@ -495,7 +679,12 @@ public abstract class Transaction<T extends Transaction<T>>
         for (int i = 0; i < nodeAccountIds.size(); i++) {
             var sigMap = signatures.get(i);
             var nodeAccountId = nodeAccountIds.get(i);
-            var keyMap = map.computeIfAbsent(nodeAccountId, k -> new HashMap<>(sigMap.getSigPairCount()));
+
+            var keyMap = map.containsKey(nodeAccountId) ?
+                Objects.requireNonNull(map.get(nodeAccountId)) :
+                new HashMap<PublicKey, byte[]>(sigMap.getSigPairCount());
+            map.put(nodeAccountId, keyMap);
+
             for (var sigPair : sigMap.getSigPairList()) {
                 keyMap.put(
                     PublicKey.fromBytes(sigPair.getPubKeyPrefix().toByteArray()),
@@ -617,6 +806,11 @@ public abstract class Transaction<T extends Transaction<T>>
      * their data variant to the transaction body.
      */
     abstract boolean onFreeze(TransactionBody.Builder bodyBuilder);
+
+    /**
+     * Called in {@link #schedule()} when convertin transaction into a scheduled version.
+     */
+    abstract void onScheduled(SchedulableTransactionBody.Builder scheduled);
 
     @Override
     final com.hedera.hashgraph.sdk.proto.Transaction makeRequest() {

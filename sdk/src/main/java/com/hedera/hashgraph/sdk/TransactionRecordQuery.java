@@ -7,6 +7,9 @@ import com.hedera.hashgraph.sdk.proto.ResponseHeader;
 import com.hedera.hashgraph.sdk.proto.TransactionGetRecordQuery;
 import io.grpc.MethodDescriptor;
 
+import javax.annotation.Nullable;
+import java.util.Objects;
+
 /**
  * Get the record for a transaction.
  * <p>
@@ -65,11 +68,25 @@ public final class TransactionRecordQuery extends Query<TransactionRecord, Trans
     }
 
     @Override
-    boolean shouldRetry(Status status, Response response) {
-        if (super.shouldRetry(status, response)) return true;
+    ExecutionState shouldRetry(Status status, Response response) {
+        var retry = super.shouldRetry(status, response);
+        if (retry != ExecutionState.Finished) return retry;
 
-        if (status != Status.OK) {
-            return false;
+        switch (status) {
+            case BUSY:
+            case UNKNOWN:
+            case RECEIPT_NOT_FOUND:
+            case RECORD_NOT_FOUND:
+                return ExecutionState.Retry;
+            case OK:
+                // When fetching payment an `OK` in there query header means the cost is in the response
+                if (paymentTransactions == null || paymentTransactions.isEmpty()) {
+                    return ExecutionState.Finished;
+                } else {
+                    break;
+                }
+            default:
+                return ExecutionState.Error;
         }
 
         var receiptStatus =
@@ -77,18 +94,31 @@ public final class TransactionRecordQuery extends Query<TransactionRecord, Trans
 
         switch (receiptStatus) {
             case BUSY:
-                // node is busy
             case UNKNOWN:
-                // still in the node's queue
             case OK:
-                // accepted but has not reached consensus
             case RECEIPT_NOT_FOUND:
             case RECORD_NOT_FOUND:
-                // has reached consensus but not generated
-                return true;
+                return ExecutionState.Retry;
+
+            case SUCCESS:
+            case IDENTICAL_SCHEDULE_ALREADY_CREATED:
+                return ExecutionState.Finished;
 
             default:
-                return false;
+                return ExecutionState.Error;
         }
+    }
+
+    @Override
+    Exception mapStatusError(Status status, @Nullable TransactionId transactionId, Response response) {
+        if (status != Status.OK) {
+            return new PrecheckStatusException(status, transactionId);
+        }
+
+        // has reached consensus but not generated
+        return new ReceiptStatusException(
+            Objects.requireNonNull(transactionId),
+            TransactionReceipt.fromProtobuf(response.getTransactionGetRecord().getTransactionRecord().getReceipt())
+        );
     }
 }

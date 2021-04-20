@@ -34,7 +34,20 @@ public final class TopicMessageSubmitTransaction extends ChunkedTransaction<Topi
 
         builder = bodyBuilder.getConsensusSubmitMessage().toBuilder();
 
-        for (var i = 0; i < signedTransactions.size(); i += nodeAccountIds.size()) {
+        for (var i = 0; i < signedTransactions.size(); i += nodeAccountIds.isEmpty() ? 1 : nodeAccountIds.size()) {
+            data = data.concat(
+                TransactionBody.parseFrom(signedTransactions.get(i).getBodyBytes())
+                    .getConsensusSubmitMessage().getMessage()
+            );
+        }
+    }
+
+    TopicMessageSubmitTransaction(com.hedera.hashgraph.sdk.proto.TransactionBody txBody) throws InvalidProtocolBufferException {
+        super(txBody);
+
+        builder = bodyBuilder.getConsensusSubmitMessage().toBuilder();
+
+        for (var i = 0; i < signedTransactions.size(); i += nodeAccountIds.isEmpty() ? 1 : nodeAccountIds.size()) {
             data = data.concat(
                 TransactionBody.parseFrom(signedTransactions.get(i).getBodyBytes())
                     .getConsensusSubmitMessage().getMessage()
@@ -94,5 +107,10 @@ public final class TopicMessageSubmitTransaction extends ChunkedTransaction<Topi
             );
         }
 
+    }
+
+    @Override
+    void onScheduled(SchedulableTransactionBody.Builder scheduled) {
+        scheduled.setConsensusSubmitMessage(builder.setMessage(data));
     }
 }

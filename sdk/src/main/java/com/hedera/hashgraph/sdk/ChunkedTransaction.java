@@ -28,6 +28,10 @@ abstract class ChunkedTransaction<T extends ChunkedTransaction<T>> extends Trans
         super(txs);
     }
 
+    ChunkedTransaction(com.hedera.hashgraph.sdk.proto.TransactionBody txBody) throws InvalidProtocolBufferException {
+        super(txBody);
+    }
+
     ChunkedTransaction() {
         super();
     }
@@ -156,6 +160,25 @@ abstract class ChunkedTransaction<T extends ChunkedTransaction<T>> extends Trans
     @Override
     public CompletableFuture<com.hedera.hashgraph.sdk.TransactionResponse> executeAsync(Client client) {
         return executeAllAsync(client).thenApply(responses -> responses.get(0));
+    }
+
+    public ScheduleCreateTransaction schedule() {
+        requireNotFrozen();
+
+        if (data.size() > CHUNK_SIZE) {
+            throw new IllegalStateException("Cannot schedule a topic message with length greater than " + CHUNK_SIZE);
+        }
+
+        onFreezeChunk(
+            bodyBuilder,
+            null,
+            0,
+            data.size(),
+            1,
+            1
+        );
+
+        return super.schedule();
     }
 
     public T freezeWith(@Nullable Client client) {

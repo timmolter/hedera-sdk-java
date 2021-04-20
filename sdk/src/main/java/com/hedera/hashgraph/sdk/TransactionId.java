@@ -1,5 +1,6 @@
 package com.hedera.hashgraph.sdk;
 
+import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.hedera.hashgraph.sdk.proto.TransactionID;
 import java8.util.concurrent.CompletableFuture;
@@ -9,6 +10,8 @@ import org.threeten.bp.Clock;
 import org.threeten.bp.Instant;
 
 import javax.annotation.Nullable;
+
+import java.util.Arrays;
 
 import static java8.util.concurrent.CompletableFuture.completedFuture;
 import static java8.util.concurrent.CompletableFuture.failedFuture;
@@ -36,34 +39,19 @@ public final class TransactionId implements WithGetReceipt, WithGetRecord {
     @Nullable
     public final Instant validStart;
 
-    @Nullable
-    public final byte[] nonce;
-
     boolean scheduled = false;
 
     /**
      * No longer part of the public API. Use `Transaction.withValidStart()` instead.
      */
-    @Deprecated
     public TransactionId(AccountId accountId, Instant validStart) {
         this.accountId = accountId;
         this.validStart = validStart;
         this.scheduled = false;
-        this.nonce = null;
-    }
-
-    TransactionId(@Nullable AccountId accountId, @Nullable Instant validStart, @Nullable byte[] nonce) {
-        this.accountId = accountId;
-        this.validStart = validStart;
-        this.nonce = nonce;
-    }
-
-    public static TransactionId withNonce(byte[] nonce) {
-        return new TransactionId(null, null, nonce);
     }
 
     public static TransactionId withValidStart(AccountId accountId, Instant validStart) {
-        return new TransactionId(accountId, validStart, null);
+        return new TransactionId(accountId, validStart);
     }
 
     /**
@@ -77,13 +65,14 @@ public final class TransactionId implements WithGetReceipt, WithGetRecord {
      */
     public static TransactionId generate(AccountId accountId) {
         Instant instant = Clock.systemUTC().instant().minusNanos((long) (Math.random() * 5000000000L + 8000000000L));
-        return new TransactionId(accountId, instant, null);
+        return new TransactionId(accountId, instant);
     }
 
     static TransactionId fromProtobuf(TransactionID transactionID) {
-        return TransactionId.withValidStart(
-            AccountId.fromProtobuf(transactionID.getAccountID()),
-            InstantConverter.fromProtobuf(transactionID.getTransactionValidStart()));
+        var accountId = transactionID.hasAccountID() ? AccountId.fromProtobuf(transactionID.getAccountID()) : null;
+        var validStart = transactionID.hasTransactionValidStart() ? InstantConverter.fromProtobuf(transactionID.getTransactionValidStart()) : null;
+
+        return new TransactionId(accountId, validStart).setScheduled(transactionID.getScheduled());
     }
 
     public static TransactionId fromString(String s) {
@@ -91,32 +80,28 @@ public final class TransactionId implements WithGetReceipt, WithGetRecord {
 
         @Nullable AccountId accountId = null;
         @Nullable Instant validStart = null;
-        @Nullable byte[] nonce = null;
+
         var scheduled = parts.length == 2 && parts[1].equals("scheduled");
 
-        try {
-            nonce = Hex.decode(parts[0]);
-        } catch (DecoderException e) {
-            parts = parts[0].split("@", 2);
+        parts = parts[0].split("@", 2);
 
-            if (parts.length != 2) {
-                throw new IllegalArgumentException("expecting [{account}@{seconds}.{nanos}|{nonce}][?scheduled]");
-            }
-
-            accountId = AccountId.fromString(parts[0]);
-
-            var validStartParts = parts[1].split("\\.", 2);
-
-            if (validStartParts.length != 2) {
-                throw new IllegalArgumentException("expecting {account}@{seconds}.{nanos}");
-            }
-
-            validStart = Instant.ofEpochSecond(
-                Long.parseLong(validStartParts[0]),
-                Long.parseLong(validStartParts[1]));
+        if (parts.length != 2) {
+            throw new IllegalArgumentException("expecting {account}@{seconds}.{nanos}[?scheduled]");
         }
 
-        return new TransactionId(accountId, validStart, nonce).setScheduled(scheduled);
+        accountId = AccountId.fromString(parts[0]);
+
+        var validStartParts = parts[1].split("\\.", 2);
+
+        if (validStartParts.length != 2) {
+            throw new IllegalArgumentException("expecting {account}@{seconds}.{nanos}");
+        }
+
+        validStart = Instant.ofEpochSecond(
+            Long.parseLong(validStartParts[0]),
+            Long.parseLong(validStartParts[1]));
+
+        return new TransactionId(accountId, validStart).setScheduled(scheduled);
     }
 
     public static TransactionId fromBytes(byte[] bytes) throws InvalidProtocolBufferException {
@@ -157,18 +142,23 @@ public final class TransactionId implements WithGetReceipt, WithGetRecord {
     }
 
     TransactionID toProtobuf() {
-        return TransactionID.newBuilder()
-            .setAccountID(accountId.toProtobuf())
-            .setTransactionValidStart(InstantConverter.toProtobuf(validStart))
-            .build();
+        var id = TransactionID.newBuilder();
+
+        if (accountId != null) {
+            id.setAccountID(accountId.toProtobuf());
+        }
+
+        if (validStart != null) {
+            id.setTransactionValidStart(InstantConverter.toProtobuf(validStart));
+        }
+
+        return id.build();
     }
 
     @Override
     public String toString() {
         if (accountId != null && validStart != null) {
             return "" + accountId + "@" + validStart.getEpochSecond() + "." + validStart.getNano() + (scheduled ? "?scheduled" : "");
-        } else if (nonce != null) {
-            return Hex.toHexString(nonce) + (scheduled ? "?scheduled" : "");
         } else {
             throw new IllegalStateException("`TransactionId.toString()` is non-exhaustive");
         }
@@ -184,8 +174,13 @@ public final class TransactionId implements WithGetReceipt, WithGetRecord {
             return false;
         }
 
-        return ((TransactionId) object).accountId.equals(accountId) &&
-            ((TransactionId) object).validStart.equals(validStart);
+        var id = (TransactionId) object;
+
+        if (accountId != null && validStart != null && id.accountId != null && id.validStart != null) {
+            return id.accountId.equals(accountId) && id.validStart.equals(validStart) && scheduled == id.scheduled;
+        } else {
+            return false;
+        }
     }
 
     @Override
